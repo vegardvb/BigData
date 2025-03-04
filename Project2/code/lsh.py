@@ -1,13 +1,12 @@
 # This is the code for the LSH project of TDT4305
+import configparser
+import sys
+from pathlib import Path
+import os
+import time
+import numpy as np
+import random
 
-import configparser  # for reading the parameters file
-import sys  # for system errors and printouts
-from pathlib import Path  # for paths of files
-import os  # for reading the input data
-import time  # for timing
-import numpy as np # for creating matrices or arrays
-import random # for randomly generating a and b for hash functions
-from itertools import combinations # for creating candidate pairs in lsh
 
 # Global parameters
 parameter_file = 'default_parameters.ini'  # the main parameters file
@@ -36,9 +35,10 @@ def read_parameters():
 
 # DO NOT CHANGE THIS METHOD
 # Reads all the documents in the 'data_path' and stores them in the dictionary 'document_list'
+# Modify the read_data method to read only a subset of documents
 def read_data(data_path):
     for (root, dirs, file) in os.walk(data_path):
-        for f in file:
+        for f in file:  # Read only the first num_documents
             file_path = data_path / f
             doc = open(file_path).read().strip().replace('\n', ' ')
             file_id = int(file_path.stem)
@@ -87,64 +87,130 @@ def naive():
 
     return similarity_matrix
 
+# Helper to get next prime number
+def get_next_prime(N):
+    def is_prime(n):
+        if n <= 1:
+            return False
+        if n <= 3:
+            return True
+        if n % 2 == 0 or n % 3 == 0:
+            return False
+        i = 5
+        while i * i <= n:
+            if n % i == 0 or n % (i + 2) == 0:
+                return False
+            i += 6
+        return True
+
+    prime = N + 1
+    while not is_prime(prime):
+        prime += 1
+    return prime
 
 # METHOD FOR TASK 1
 # Creates the k-Shingles of each document and returns a list of them
 def k_shingles():
-    docs_k_shingles = []  # holds the k-shingles of each document
+    docs_k_shingles = []
+    k_value = parameters_dictionary['k']
 
-    # implement your code here
+    for _, doc in document_list.items():
+        cleaned_doc = ''.join(c for c in doc if c.isalnum() or c.isspace())
+        words = cleaned_doc.split()
+        k_shingles_set = set(' '.join(words[i:i+k_value]) for i in range(len(words) - k_value + 1))
+        docs_k_shingles.append(k_shingles_set)
 
     return docs_k_shingles
 
-
 # METHOD FOR TASK 2
 # Creates a signatures set of the documents from the k-shingles list
-def signature_set(k_shingles):
-    docs_sig_sets = []
+def signature_set(k_shingles_list):
+    unique_shingles = set().union(*k_shingles_list)
+    unique_shingles_list = list(unique_shingles)
+    shingle_to_index = {shingle: index for index, shingle in enumerate(unique_shingles_list)}
 
-    # implement your code here
+    num_docs = len(k_shingles_list)
+    num_shingles = len(unique_shingles)
+    input_matrix = np.zeros((num_shingles, num_docs), dtype=int)
 
-    return docs_sig_sets
+    for doc_index, shingles_set in enumerate(k_shingles_list):
+        for shingle in shingles_set:
+            shingle_index = shingle_to_index[shingle]
+            input_matrix[shingle_index, doc_index] = 1
 
+    return input_matrix
 
 # METHOD FOR TASK 3
-
 # A function for generating hash functions
 def generate_hash_functions(num_perm, N):
-    hash_funcs = []
-    
-    # implement your code here
+    hash_functions = []
+    for i in range(1, num_perm + 1):
+        a_val = random.randint(1, N)
+        b_val = random.randint(0, N)
+        p_val = get_next_prime(N)
+        hash_function = (lambda x, a=a_val, b=b_val, p=p_val: ((a * x + b) % (p)) + 1, {'a': a_val, 'b': b_val, 'p': p_val})
+        hash_functions.append(hash_function)
+    return hash_functions
 
-    return hash_funcs
 # Creates the minHash signatures after generating hash functions
-def minHash(docs_signature_sets, hash_fn):
-    min_hash_signatures = []
+def minHash(docs_signature_sets, hash_function):
+    input_matrix = docs_signature_sets
+    num_shingles = input_matrix.shape[0]
+    num_docs = input_matrix.shape[1]
+    num_permutation = len(hash_function)
+    min_hash_signatures = np.full((num_permutation, num_docs), np.inf)
 
-    # implement your code here
+    for shingle in range(num_shingles):
+        for doc in range(num_docs):
+            if input_matrix[shingle, doc] == 1:
+                for permutation, (hash_func, params) in enumerate(hash_function):
+                    shingle_hash = hash_func(shingle, **params)
+                    min_hash_signatures[permutation, doc] = min(
+                        min_hash_signatures[permutation, doc], shingle_hash)
 
     return min_hash_signatures
 
-
 # METHOD FOR TASK 4
 # Hashes the MinHash Signature Matrix into buckets and find candidate similar documents
-def lsh(m_matrix):
-    candidates = []  # list of candidate sets of documents for checking similarity
+def lsh(min_hash_signatures):
+    b_val = parameters_dictionary['b']
+    num_rows = min_hash_signatures.shape[0]
+    num_docs = min_hash_signatures.shape[1]
+    rows_per_band = num_rows // b_val
+    candidates = set()
 
-    # implement your code here
+    for band in range(b_val):
+        start_index = band * rows_per_band
+        end_index = start_index + rows_per_band
+        buckets = {}
+
+        for doc in range(num_docs):
+            band_slice = tuple(min_hash_signatures[start_index:end_index, doc])
+            band_hash = hash(band_slice)
+
+            if band_hash not in buckets:
+                buckets[band_hash] = [doc]
+            else:
+                for candidate_doc in buckets[band_hash]:
+                    candidates.add((candidate_doc, doc))
+                buckets[band_hash].append(doc)
 
     return candidates
-
 
 # METHOD FOR TASK 5
 # Calculates the similarities of the candidate documents
 def candidates_similarities(candidate_docs, min_hash_matrix):
-    similarity_dict = []
+    similarity_list = []
+    t_threshold = parameters_dictionary['t']
 
-    # implement your code here
+    for candidate_pair in candidate_docs:
+        doc1, doc2 = candidate_pair
+        agreement = np.sum(min_hash_matrix[:, doc1] == min_hash_matrix[:, doc2])
+        similarity = agreement / min_hash_matrix.shape[0]
+        if similarity > t_threshold:
+            similarity_list.append({candidate_pair: similarity})
 
-    return similarity_dict
-
+    return similarity_list
 
 
 # DO NOT CHANGE THIS METHOD
